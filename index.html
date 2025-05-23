@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ankara Metro Canlı Takip</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        #map { height: 70vh; width: 100%; border-radius: 0.5rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+
+        /* İstasyon İkonu ve Etiketi */
+        .leaflet-station-div-icon {
+            text-align: center;
+        }
+        .station-marker-dot {
+            background-color: white;
+            border: 3px solid #333; /* Daha kalın border */
+            border-radius: 50%;
+            width: 12px; /* Biraz daha büyük */
+            height: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            margin: 0 auto; /* Ortalamak için */
+        }
+        .station-permanent-label {
+            font-size: 11px; /* Biraz daha büyük font */
+            font-weight: bold;
+            color: #2c3e50; /* Koyu renk */
+            text-shadow: 0px 0px 3px white, 0px 0px 3px white, 0px 0px 3px white; /* Daha belirgin gölge */
+            white-space: nowrap; /* Tek satırda kalması için */
+            margin-top: 2px; /* Noktadan biraz aşağıda */
+        }
+
+        .train-icon-svg {
+            transition: transform 0.5s linear; /* Smooth rotation */
+        }
+        .info-panel {
+            background-color: rgba(255, 255, 255, 0.9);
+            padding: 10px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .leaflet-popup-content-wrapper {
+            border-radius: 8px;
+        }
+        .leaflet-popup-content {
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .leaflet-popup-content b {
+            color: #333;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center p-4">
+    <div class="w-full max-w-6xl"> {/* max-w-5xl'den max-w-6xl'e genişletildi */}
+        <header class="mb-4 text-center">
+            <h1 class="text-3xl font-bold text-gray-800">Ankara Metro Canlı Takip (Simülasyon)</h1>
+            <p id="currentTimeDisplay" class="text-lg text-gray-600"></p>
+        </header>
+
+        <div class="mb-4 flex justify-center items-center space-x-2">
+            <input type="text" id="stationSearchInput" placeholder="İstasyon adı girin..." class="p-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm w-64">
+            <button id="searchButton" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">Ara</button>
+        </div>
+        <div id="searchResults" class="text-center mb-2"></div>
+
+
+        <div id="map"></div>
+
+        <div class="mt-4 p-4 bg-white rounded-lg shadow text-sm text-gray-700">
+            <h2 class="font-semibold text-lg mb-2">Simülasyon Bilgileri:</h2>
+            <p>Bu uygulama, Ankara M1, M2 ve M3 metro hatlarındaki trenlerin konumlarını gerçek zamanlı olarak simüle eder.</p>
+            <p>Simülasyon, trenlerin sefer sıklıkları, ortalama hızları (yaklaşık 40 km/s) ve durak bekleme süreleri (30sn) gibi verilere dayanmaktadır. Gerçek GPS verileri kullanılmamaktadır.</p>
+            <p>Harita üzerindeki tren ikonlarına 🚆 tıklayarak detaylı bilgi alabilirsiniz.</p>
+            <p>Sefer Sıklığı (Hafta İçi Baz Alınmıştır):</p>
+            <ul class="list-disc list-inside ml-4">
+                <li>06:00 - 07:00: 10 dakika</li>
+                <li>07:00 - 09:00: 5 dakika</li>
+                <li>09:00 - 15:00: 5 dakika</li>
+                <li>15:00 - 19:30: 5 dakika</li>
+                <li>19:30 - 23:00: 11.5 dakika</li>
+                <li>23:00 - 01:00: 15 dakika</li>
+            </ul>
+             <p class="mt-2"><strong>Not:</strong> Duraklardaki bekleme süresi 30 saniye, istasyonlar arası ortalama seyahat süresi 90 saniye olarak varsayılmıştır.</p>
+        </div>
+    </div>
+
+    <script>
+        // --- Harita ve Simülasyon Mantığı ---
+        const AVERAGE_SPEED_KMH = 40; // Ortalama hız km/s
+        const ankaraCenter = [39.9208, 32.8541]; // Kızılay
+        const map = L.map('map').setView(ankaraCenter, 11.5); // Zoom biraz artırıldı
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        const stations = [
+            // M3 Hattı
+            { id: "M3_OSB", name: "OSB-Törekent", lat: 39.9980, lon: 32.5720, line: "M3", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M3_GOP", name: "GOP", lat: 40.0009, lon: 32.5835, line: "M3", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M3_LALE", name: "Lale", lat: 40.0012, lon: 32.5970, line: "M3", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M3_HARIKALAR", name: "Harikalar Diyarı", lat: 40.0008, lon: 32.6115, line: "M3", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M3_FATIH", name: "Fatih", lat: 39.9990, lon: 32.6260, line: "M3", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M3_DEVLET", name: "Devlet Mah.", lat: 39.9885, lon: 32.6570, line: "M3", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M3_ISTANBUL", name: "İstanbul Yolu", lat: 39.9830, lon: 32.6680, line: "M3", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M3_BOTANIK", name: "Botanik", lat: 39.9780, lon: 32.6800, line: "M3", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M3_MESA", name: "Mesa", lat: 39.9745, lon: 32.6920, line: "M3", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M3_BATIMERKEZ", name: "Batı Merkez", lat: 39.9715, lon: 32.7000, line: "M3", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M1_BATIKENT", name: "Batıkent", lat: 39.9727, lon: 32.7099, line: "M1", travelTimeNextSec: 90, dwellTimeSec: 30, transfer: true },
+            { id: "M1_OSTIM", name: "Ostim", lat: 39.9693, lon: 32.7263, line: "M1", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M1_MACUNKOY", name: "Macunköy", lat: 39.9620, lon: 32.7500, line: "M1", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M1_YENIMAHALLE", name: "Yenimahalle", lat: 39.9560, lon: 32.7670, line: "M1", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M1_DEMETEVLER", name: "Demetevler", lat: 39.9500, lon: 32.7820, line: "M1", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M1_HASTANE", name: "Hastane", lat: 39.9450, lon: 32.7980, line: "M1", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M1_IVEDIK", name: "İvedik", lat: 39.9486, lon: 32.8136, line: "M1", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M1_AKKOPRU", name: "Akköprü", lat: 39.9465, lon: 32.8275, line: "M1", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M1_AKM", name: "AKM", lat: 39.9380, lon: 32.8400, line: "M1", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M1_ULUS", name: "Ulus", lat: 39.9378, lon: 32.8508, line: "M1", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M1_SIHHIYE", name: "Sıhhiye", lat: 39.9260, lon: 32.8530, line: "M1", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M2_KIZILAY", name: "Kızılay", lat: 39.9208, lon: 32.8541, line: "M2", travelTimeNextSec: 90, dwellTimeSec: 30, transfer: true },
+            { id: "M2_NECATIBEY", name: "Necatibey", lat: 39.9165, lon: 32.8480, line: "M2", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M2_MILLIKUTUPHANE", name: "Milli Kütüphane", lat: 39.9085, lon: 32.8380, line: "M2", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M2_SOGUTOZU", name: "Söğütözü", lat: 39.9045, lon: 32.8220, line: "M2", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M2_MTA", name: "MTA", lat: 39.9000, lon: 32.8080, line: "M2", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M2_ODTU", name: "ODTÜ", lat: 39.8920, lon: 32.7950, line: "M2", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M2_BILKENT", name: "Bilkent", lat: 39.8830, lon: 32.7800, line: "M2", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M2_TARIM", name: "Tarım Bakanlığı/Danıştay", lat: 39.8750, lon: 32.7650, line: "M2", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M2_BEYTEPE", name: "Beytepe", lat: 39.8680, lon: 32.7450, line: "M2", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M2_UMITKOY", name: "Ümitköy", lat: 39.8689, lon: 32.7222, line: "M2", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M2_CAYYOLU", name: "Çayyolu", lat: 39.8695, lon: 32.7070, line: "M2", travelTimeNextSec: 90, dwellTimeSec: 30 },
+            { id: "M2_KORU", name: "Koru", lat: 39.8713, lon: 32.6902, line: "M2", dwellTimeSec: 0 }
+        ];
+
+        const stationCoords = stations.map(s => [s.lat, s.lon]);
+        L.polyline(stationCoords, { color: '#555', weight: 5, opacity: 0.7 }).addTo(map);
+
+        stations.forEach(station => {
+            const stationIconHtml = `
+                <div class="leaflet-station-div-icon">
+                    <div class="station-marker-dot"></div>
+                    <div class="station-permanent-label">${station.name}</div>
+                </div>`;
+            const stationIcon = L.divIcon({
+                html: stationIconHtml,
+                className: '', // Önemli: Leaflet'in default class'ını boşaltmak
+                iconSize: [100, 30], // Etiketin genişliğine göre ayarlanabilir
+                iconAnchor: [50, 15]  // İkonun merkezini ayarla (etiketin ortası, noktanın altı)
+            });
+            L.marker([station.lat, station.lon], { icon: stationIcon, zIndexOffset: 100 }) // zIndexOffset istasyonların trenlerin altında kalmaması için
+                .addTo(map);
+                // .bindTooltip(station.name, { permanent: true, direction: 'bottom', offset: [0, 10], className: 'station-label' }); // Kalıcı etiket
+        });
+
+        const trainSvgIcon = (color = "#FF6347", angle = 0) => `
+            <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 30 30" class="train-icon-svg" style="transform: rotate(${angle}deg); filter: drop-shadow(0px 1px 2px rgba(0,0,0,0.5));">
+                <rect x="5" y="10" width="20" height="12" rx="2" fill="${color}" stroke="#222" stroke-width="1.2"/>
+                <rect x="7" y="12" width="4" height="6" fill="rgba(173,216,230,0.8)" stroke="#333" stroke-width="0.5"/>
+                <rect x="13" y="12" width="4" height="6" fill="rgba(173,216,230,0.8)" stroke="#333" stroke-width="0.5"/>
+                <rect x="19" y="12" width="4" height="6" fill="rgba(173,216,230,0.8)" stroke="#333" stroke-width="0.5"/>
+                <circle cx="9" cy="24" r="2.5" fill="#444" stroke="#222" stroke-width="0.5"/>
+                <circle cx="21" cy="24" r="2.5" fill="#444" stroke="#222" stroke-width="0.5"/>
+                <path d="M5 10 Q15 4 25 10" fill="none" stroke="#555" stroke-width="1.8"/>
+            </svg>`;
+
+        let activeTrains = [];
+
+        function getServiceIntervalSeconds(dateTime) {
+            const hour = dateTime.getHours();
+            const minute = dateTime.getMinutes();
+            if (hour >= 6 && hour < 7) return 10 * 60;
+            if (hour >= 7 && hour < 9) return 5 * 60;
+            if (hour >= 9 && hour < 15) return 5 * 60;
+            if (hour >= 15 && (hour < 19 || (hour === 19 && minute < 30))) return 5 * 60;
+            if ((hour >= 19 && minute >= 30) || (hour > 19 && hour < 23)) return 11.5 * 60;
+            if (hour >= 23 || hour < 1) return 15 * 60;
+            return 15 * 60;
+        }
+
+        function calculateAngle(lat1, lon1, lat2, lon2) {
+            const dy = lat2 - lat1;
+            const dx = Math.cos(Math.PI / 180 * lat1) * (lon2 - lon1);
+            const angle = Math.atan2(dx, dy) * 180 / Math.PI;
+            return angle;
+        }
+
+        function initializeTrains() {
+            const now = new Date();
+            const operationStartTime = new Date(now);
+            operationStartTime.setHours(6, 0, 0, 0);
+
+            activeTrains.forEach(train => train.marker.remove());
+            activeTrains = [];
+
+            let trainIdCounterOSB = 0;
+            let nextDepartureOSB = new Date(operationStartTime);
+            while (nextDepartureOSB < now) {
+                const interval = getServiceIntervalSeconds(nextDepartureOSB);
+                const totalTripDurationOSB = stations.reduce((acc, s, idx) => idx < stations.length - 1 ? acc + s.travelTimeNextSec + s.dwellTimeSec : acc, 0) * 1000;
+                if (nextDepartureOSB.getTime() + totalTripDurationOSB > operationStartTime.getTime()) {
+                     spawnAndPositionTrain(`OSB_KORU_${trainIdCounterOSB++}`, stations, new Date(nextDepartureOSB), now, "OSB_TO_KORU");
+                }
+                nextDepartureOSB.setSeconds(nextDepartureOSB.getSeconds() + interval);
+            }
+
+            const stationsReversed = [...stations].reverse().map(s => ({...s}));
+            for(let i=0; i < stationsReversed.length; i++) {
+                stationsReversed[i].dwellTimeSec = (i === stationsReversed.length - 1) ? 0 : 30;
+                if (i < stationsReversed.length - 1) {
+                    const originalPrevStationIndex = stations.length - 1 - (i + 1) ;
+                    stationsReversed[i].travelTimeNextSec = stations[originalPrevStationIndex]?.travelTimeNextSec || 90;
+                } else {
+                    stationsReversed[i].travelTimeNextSec = 0;
+                }
+            }
+
+            let trainIdCounterKoru = 0;
+            let nextDepartureKoru = new Date(operationStartTime);
+            while (nextDepartureKoru < now) {
+                const interval = getServiceIntervalSeconds(nextDepartureKoru);
+                const totalTripDurationKoru = stationsReversed.reduce((acc, s, idx) => idx < stationsReversed.length - 1 ? acc + s.travelTimeNextSec + s.dwellTimeSec : acc, 0) * 1000;
+                 if (nextDepartureKoru.getTime() + totalTripDurationKoru > operationStartTime.getTime()) {
+                    spawnAndPositionTrain(`KORU_OSB_${trainIdCounterKoru++}`, stationsReversed, new Date(nextDepartureKoru), now, "KORU_TO_OSB");
+                }
+                nextDepartureKoru.setSeconds(nextDepartureKoru.getSeconds() + interval);
+            }
+        }
+
+        function spawnAndPositionTrain(id, path, departureTime, currentTime, direction) {
+            let elapsedSecondsSinceDeparture = (currentTime.getTime() - departureTime.getTime()) / 1000;
+            if (elapsedSecondsSinceDeparture < 0) elapsedSecondsSinceDeparture = 0;
+
+            let currentStationIdx = 0;
+            let timeSpentTotal = 0; // Total time spent including travel and dwells up to the current segment/station
+            let status = 'moving';
+            let lat = path[0].lat;
+            let lon = path[0].lon;
+            let angle = 0;
+            let timeOnCurrentSegment = 0; // Time spent on the current travel segment
+            let timeInCurrentDwell = 0;   // Time spent dwelling at the current station
+
+            for (let i = 0; i < path.length -1; i++) {
+                const segmentTravelTime = path[i].travelTimeNextSec;
+                const stationDwellTime = path[i].dwellTimeSec;
+
+                // Moving to next station
+                if (timeSpentTotal + segmentTravelTime <= elapsedSecondsSinceDeparture) {
+                    timeSpentTotal += segmentTravelTime;
+                    currentStationIdx = i + 1;
+                    lat = path[currentStationIdx].lat;
+                    lon = path[currentStationIdx].lon;
+                    status = 'dwelling';
+
+                    // Dwelling at station
+                    if (timeSpentTotal + stationDwellTime <= elapsedSecondsSinceDeparture) {
+                        timeSpentTotal += stationDwellTime;
+                        status = 'moving';
+                        if (currentStationIdx === path.length - 1) {
+                            status = 'finished';
+                            break;
+                        }
+                    } else {
+                        // Still dwelling
+                        timeInCurrentDwell = elapsedSecondsSinceDeparture - timeSpentTotal;
+                        break;
+                    }
+                } else {
+                    // Still moving on this segment
+                    timeOnCurrentSegment = elapsedSecondsSinceDeparture - timeSpentTotal;
+                    const progress = timeOnCurrentSegment / segmentTravelTime;
+                    lat = path[i].lat + (path[i+1].lat - path[i].lat) * progress;
+                    lon = path[i].lon + (path[i+1].lon - path[i].lon) * progress;
+                    angle = calculateAngle(path[i].lat, path[i].lon, path[i+1].lat, path[i+1].lon);
+                    status = 'moving';
+                    break;
+                }
+            }
+             if (currentStationIdx === path.length -1 && status !== 'finished' && timeSpentTotal <= elapsedSecondsSinceDeparture) {
+                status = 'finished';
+            }
+
+            if (status === 'finished') return;
+
+            const trainIcon = L.divIcon({
+                html: trainSvgIcon(direction === "OSB_TO_KORU" ? "#3B82F6" : "#EF4444", angle), // Tailwind Mavi ve Kırmızı
+                className: '',
+                iconSize: [30, 30],
+                iconAnchor: [15, 15]
+            });
+
+            const marker = L.marker([lat, lon], { icon: trainIcon, zIndexOffset: 2000 }).addTo(map); // Trenler istasyonların üzerinde
+            
+            const newTrain = {
+                id, marker, path, currentStationIdx, status, direction, departureTime,
+                timeOnSegment: status === 'moving' ? timeOnCurrentSegment : 0,
+                timeAtStation: status === 'dwelling' ? timeInCurrentDwell : 0,
+            };
+            marker.on('click', () => displayTrainInfo(newTrain));
+            activeTrains.push(newTrain);
+        }
+
+        function updateTrainPositions() {
+            const now = new Date();
+            document.getElementById('currentTimeDisplay').textContent = `Şu Anki Saat: ${now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+
+            const trainsToRemove = [];
+
+            activeTrains.forEach(train => {
+                let elapsedSecondsSinceDeparture = (now.getTime() - train.departureTime.getTime()) / 1000;
+                if (elapsedSecondsSinceDeparture < 0) elapsedSecondsSinceDeparture = 0;
+
+                let currentStationIdx = 0;
+                let timeSpentTotal = 0;
+                let newStatus = 'moving';
+                let newLat = train.path[0].lat;
+                let newLon = train.path[0].lon;
+                let newAngle = 0;
+                let newTimeOnSegment = 0;
+                let newTimeInDwell = 0;
+
+                for (let i = 0; i < train.path.length -1; i++) {
+                    const segmentTravelTime = train.path[i].travelTimeNextSec;
+                    const stationDwellTime = train.path[i].dwellTimeSec;
+
+                    if (timeSpentTotal + segmentTravelTime <= elapsedSecondsSinceDeparture) {
+                        timeSpentTotal += segmentTravelTime;
+                        currentStationIdx = i + 1;
+                        newLat = train.path[currentStationIdx].lat;
+                        newLon = train.path[currentStationIdx].lon;
+                        newStatus = 'dwelling';
+
+                        if (timeSpentTotal + stationDwellTime <= elapsedSecondsSinceDeparture) {
+                            timeSpentTotal += stationDwellTime;
+                            newStatus = 'moving';
+                            if (currentStationIdx === train.path.length - 1) {
+                                newStatus = 'finished';
+                                break;
+                            }
+                        } else {
+                            newTimeInDwell = elapsedSecondsSinceDeparture - timeSpentTotal;
+                            break;
+                        }
+                    } else {
+                        newTimeOnSegment = elapsedSecondsSinceDeparture - timeSpentTotal;
+                        const progress = newTimeOnSegment / segmentTravelTime;
+                        newLat = train.path[i].lat + (train.path[i+1].lat - train.path[i].lat) * progress;
+                        newLon = train.path[i].lon + (train.path[i+1].lon - train.path[i].lon) * progress;
+                        newAngle = calculateAngle(train.path[i].lat, train.path[i].lon, train.path[i+1].lat, train.path[i+1].lon);
+                        newStatus = 'moving';
+                        break;
+                    }
+                }
+                if (currentStationIdx === train.path.length -1 && newStatus !== 'finished' && timeSpentTotal <= elapsedSecondsSinceDeparture) {
+                     newStatus = 'finished';
+                }
+
+                if (newStatus === 'finished') {
+                    trainsToRemove.push(train.id);
+                    train.marker.remove();
+                } else {
+                    train.marker.setLatLng([newLat, newLon]);
+                    const trainColor = train.direction === "OSB_TO_KORU" ? "#3B82F6" : "#EF4444";
+                    train.marker.setIcon(L.divIcon({
+                        html: trainSvgIcon(trainColor, newAngle),
+                        className: '', iconSize: [30, 30], iconAnchor: [15, 15]
+                    }));
+                    train.status = newStatus;
+                    train.currentStationIdx = currentStationIdx;
+                    train.timeOnSegment = newTimeOnSegment;
+                    train.timeAtStation = newTimeInDwell;
+                    // Eğer popup açıksa güncelle (opsiyonel, şimdilik tıklayınca açılıyor)
+                    if (train.marker.isPopupOpen()) {
+                        displayTrainInfo(train, true); // true: update existing popup
+                    }
+                }
+            });
+            activeTrains = activeTrains.filter(t => !trainsToRemove.includes(t.id));
+        }
+
+        function displayTrainInfo(train, update = false) {
+            let content = `<b>Tren ID:</b> ${train.id}<br>`;
+            const fromStationName = train.path[0].name;
+            const toStationName = train.path[train.path.length - 1].name;
+            content += `<b>Yön:</b> ${fromStationName} → ${toStationName}<br>`;
+            content += `<b>Ortalama Hız:</b> ~${AVERAGE_SPEED_KMH} km/s<br>`;
+
+            const currentPathStation = train.path[train.currentStationIdx];
+
+            if (train.status === 'moving') {
+                const prevStation = currentPathStation;
+                const nextStation = train.path[train.currentStationIdx + 1];
+                content += `<b>Durum:</b> ${prevStation.name} ile ${nextStation.name} arasında hareket halinde.<br>`;
+                content += `<b>Önceki İstasyon:</b> ${prevStation.name}<br>`;
+                content += `<b>Sonraki İstasyon:</b> ${nextStation.name}<br>`;
+                const timeToNext = Math.round(prevStation.travelTimeNextSec - train.timeOnSegment);
+                content += `<b>Sonraki İstasyona Tahmini Varış:</b> ${timeToNext > 0 ? timeToNext : 0} saniye<br>`;
+            } else if (train.status === 'dwelling') {
+                content += `<b>Durum:</b> ${currentPathStation.name} istasyonunda bekliyor.<br>`;
+                const timeRemainingAtStation = Math.round(currentPathStation.dwellTimeSec - train.timeAtStation);
+                content += `<b>Kalan Bekleme Süresi:</b> ${timeRemainingAtStation > 0 ? timeRemainingAtStation : 0} saniye<br>`;
+                if (train.currentStationIdx < train.path.length - 1) {
+                    const nextStation = train.path[train.currentStationIdx + 1];
+                    content += `<b>Sonraki İstasyon:</b> ${nextStation.name}<br>`;
+                } else {
+                    content += `<b>Sonraki İstasyon:</b> Son Durak<br>`;
+                }
+            }
+            content += `<b>Varış Durağı:</b> ${toStationName}`;
+
+            if (update && train.marker.getPopup()) {
+                train.marker.setPopupContent(content);
+            } else {
+                train.marker.bindPopup(content).openPopup();
+            }
+        }
+
+        // İstasyon Arama Fonksiyonları
+        const searchInput = document.getElementById('stationSearchInput');
+        const searchButton = document.getElementById('searchButton');
+        const searchResultsDiv = document.getElementById('searchResults');
+
+        function searchStation() {
+            const query = searchInput.value.trim().toLowerCase();
+            searchResultsDiv.innerHTML = ''; // Önceki sonuçları temizle
+            if (!query) return;
+
+            const results = stations.filter(station => station.name.toLowerCase().includes(query));
+
+            if (results.length > 0) {
+                const foundStation = results[0]; // İlk eşleşeni al
+                map.setView([foundStation.lat, foundStation.lon], 15); // İstasyonun üzerine zoom yap
+                // İstasyona bir işaretçi ekleyebilir veya mevcut olanı vurgulayabiliriz.
+                // Şimdilik sadece haritayı kaydırıyoruz.
+                L.popup()
+                    .setLatLng([foundStation.lat, foundStation.lon])
+                    .setContent(`<b>${foundStation.name}</b> istasyonuna gidildi.`)
+                    .openOn(map);
+                searchInput.value = ''; // Arama kutusunu temizle
+            } else {
+                searchResultsDiv.textContent = "İstasyon bulunamadı.";
+            }
+        }
+        searchButton.addEventListener('click', searchStation);
+        searchInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                searchStation();
+            }
+        });
+
+
+        // Başlangıç
+        initializeTrains();
+        updateTrainPositions();
+        setInterval(updateTrainPositions, 1500); // Güncelleme sıklığı 1.5 saniye
+        setInterval(initializeTrains, 5 * 60 * 1000); // Periyodik yeniden başlatma
+
+    </script>
+</body>
+</html>
